@@ -1,0 +1,9 @@
+<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>الكاميرا</title><link rel="stylesheet" href="/css/camera.css"></head>
+<body><h1>الكاميرا</h1>
+<form class="card" id="pair"><div class="muted">اكتب الكود الظاهر على صفحة الريموت</div>
+<input id="code" inputmode="numeric" maxlength="6" pattern="\d{6}" placeholder="000000" autocomplete="off" required>
+<div class="err" id="err"></div><button>اربط</button></form>
+<div id="live" hidden><div class="stage"><video id="cam" autoplay playsinline muted></video><canvas id="cv"></canvas></div>
+<div class="badge" id="badge"></div><div class="card" style="max-width:640px;margin:auto"><div id="state" class="ok">متصل</div>
+<ul class="help"><li><b>قبضة مقفولة</b> <span class="e">✊</span> = تشغيل</li><li><b>صباع السبابة لفوق</b> <span class="e">☝️</span> = رجوع 5 ثواني</li><li><b>حرك إيدك لليمين</b> <span class="e">👉</span> = تقديم 5 ثواني</li><li><b>كف مفتوح</b> <span class="e">🖐</span> = إيقاف</li></ul><label class="muted"><input type="checkbox" id="rev" style="width:auto"> عكس اتجاه التقديم (لو اتجاه الإيد معكوس)</label></div></div>
+<script type="module" src="/js/camera.js"></script></body></html>

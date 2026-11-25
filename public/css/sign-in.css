@@ -1,0 +1,6 @@
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,"Segoe UI",Tahoma,sans-serif;background:#0f1220;color:#eef;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px}
+h1{margin:8px 0 18px}input,button,select{font:inherit;border-radius:10px;border:1px solid #3a4070;padding:12px 14px}
+input{background:#181c33;color:#fff;width:100%}button{background:#5b6cff;color:#fff;border:0;cursor:pointer}button:hover{background:#7280ff}button.danger{background:#d9475a}
+.card{background:#171b30;border-radius:16px;padding:22px;width:100%;max-width:420px;display:flex;flex-direction:column;gap:12px}
+.err{color:#ff8a98;min-height:1.2em;font-size:.95rem}a{color:#9fb0ff}.muted{color:#9aa}
+[hidden]{display:none!important}

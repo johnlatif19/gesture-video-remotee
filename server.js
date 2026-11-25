@@ -1,0 +1,290 @@
+const express = require('express');
+const path = require('path');
+const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
+try { require('fs').existsSync(path.join(__dirname, '.env')) && loadEnv(); } catch (e) {}
+
+function loadEnv() {
+  // tiny .env loader for local runs (Vercel injects real env vars)
+  require('fs').readFileSync(path.join(__dirname, '.env'), 'utf8').split('\n').forEach((l) => {
+    const m = l.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
+    if (m && !process.env[m[1]] && m[2]) process.env[m[1]] = m[2];
+  });
+}
+
+const env = (k) => process.env[k] || '';
+const JWT_SECRET = () => env('JWT_SECRET') || (process.env.NODE_ENV === 'test' ? 'test-secret' : '');
+// The user's env names are spelled CLOUDINRAY_*; the correct spelling CLOUDINARY_* is accepted too.
+const CLD = () => ({
+  cloud_name: env('CLOUDINRAY_NAME') || env('CLOUDINARY_NAME') || env('CLOUDINARY_CLOUD_NAME'),
+  api_key: env('CLOUDINRAY_API_KEY') || env('CLOUDINARY_API_KEY'),
+  api_secret: env('CLOUDINRAY_API_SECRET') || env('CLOUDINARY_API_SECRET'),
+});
+
+/* ---------- storage: Firestore, or in-memory when FIREBASE_CONFIG is empty (local/test only) ---------- */
+let db;
+function getDb() {
+  if (db) return db;
+  if (env('FIREBASE_CONFIG')) {
+    const admin = require('firebase-admin');
+    if (!admin.apps.length) {
+      const cfg = JSON.parse(env('FIREBASE_CONFIG'));
+      if (cfg.private_key) cfg.private_key = cfg.private_key.replace(/\\n/g, '\n');
+      admin.initializeApp({ credential: admin.credential.cert(cfg) });
+    }
+    const fs = admin.firestore();
+    db = {
+      async get(col, id) { const d = await fs.collection(col).doc(id).get(); return d.exists ? d.data() : null; },
+      async set(col, id, data) { await fs.collection(col).doc(id).set(data); },
+      async del(col, id) { await fs.collection(col).doc(id).delete(); },
+      async listBy(col, field, val) {
+        const q = await fs.collection(col).where(field, '==', val).get();
+        return q.docs.map((d) => ({ id: d.id, ...d.data() }));
+      },
+    };
+  } else {
+    const mem = {};
+    const c = (n) => (mem[n] = mem[n] || new Map());
+    db = {
+      async get(col, id) { const v = c(col).get(id); return v ? JSON.parse(JSON.stringify(v)) : null; },
+      async set(col, id, data) { c(col).set(id, JSON.parse(JSON.stringify(data))); },
+      async del(col, id) { c(col).delete(id); },
+      async listBy(col, field, val) { return [...c(col)].filter(([, v]) => v[field] === val).map(([id, v]) => ({ id, ...v })); },
+    };
+  }
+  return db;
+}
+const _setDb = (d) => { db = d; };
+
+/* ---------- helpers ---------- */
+const app = express();
+app.disable('x-powered-by');
+app.set('trust proxy', 1); // Vercel sits behind a proxy: use the real client IP
+app.use((req, res, next) => {
+  res.set({ 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY', 'Referrer-Policy': 'same-origin',
+    'Permissions-Policy': 'camera=(self), microphone=()', 'Cache-Control': req.path.startsWith('/api/') ? 'no-store' : 'no-cache' });
+  next();
+});
+// CSRF defence in depth: browsers send Origin on cross-site POST/DELETE; reject if it is not this host.
+app.use((req, res, next) => {
+  if (req.method === 'GET' || req.method === 'HEAD') return next();
+  const o = req.headers.origin;
+  if (o) { let h = ''; try { h = new URL(o).host; } catch (e) {} if (h !== req.headers.host) return res.status(403).json({ error: 'origin' }); }
+  next();
+});
+app.use(express.json({ limit: '50kb' }));
+app.use(cookieParser());
+const wrap = (fn) => (req, res) => fn(req, res).catch((e) => { console.error(e); res.status(500).json({ error: 'خطأ في السيرفر' }); });
+const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+const rnd = (n) => crypto.randomBytes(n).toString('hex');
+const DUMMY_HASH = bcrypt.hashSync('dummy-password-for-timing', 10);
+const validUser = (u) => typeof u === 'string' && /^[a-zA-Z0-9_.-]{3,30}$/.test(u);
+
+function auth(req, res, next) {
+  try {
+    const t = req.cookies.token;
+    req.user = jwt.verify(t, JWT_SECRET(), { algorithms: ['HS256'] }).u;
+    next();
+  } catch (e) { res.status(401).json({ error: 'سجل دخول الأول' }); }
+}
+
+// very small in-memory rate limit (per serverless instance, best effort)
+const hits = new Map();
+function limit(max, windowMs) {
+  return (req, res, next) => {
+    const k = req.path + (req.headers['x-forwarded-for'] || req.ip);
+    const now = Date.now();
+    const arr = (hits.get(k) || []).filter((t) => now - t < windowMs);
+    if (arr.length >= max) return res.status(429).json({ error: 'محاولات كتير، استنى شوية' });
+    arr.push(now); hits.set(k, arr); next();
+  };
+}
+
+/* ---------- accounts ---------- */
+app.post('/api/signup', limit(10, 60000), wrap(async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!JWT_SECRET()) return res.status(500).json({ error: 'JWT_SECRET مش متضبط' });
+  if (!validUser(username)) return res.status(400).json({ error: 'اليوزر 3-30 حرف إنجليزي/أرقام (_ . - مسموح)' });
+  if (typeof password !== 'string' || password.length < 8 || password.length > 72) return res.status(400).json({ error: 'الباسورد من 8 لـ 72 حرف' });
+  const id = username.toLowerCase();
+  if (await getDb().get('users', id)) return res.status(409).json({ error: 'اليوزر ده موجود' });
+  await getDb().set('users', id, { username, hash: await bcrypt.hash(password, 10), created: Date.now() });
+  res.json({ ok: true });
+}));
+
+app.post('/api/login', limit(10, 60000), wrap(async (req, res) => {
+  const { username, password } = req.body || {};
+  if (!JWT_SECRET()) return res.status(500).json({ error: 'JWT_SECRET مش متضبط' });
+  const u = validUser(username) && await getDb().get('users', username.toLowerCase());
+  const okPw = typeof password === 'string' && (await bcrypt.compare(password, u ? u.hash : DUMMY_HASH)); // same work for unknown users
+  if (!u || !okPw) return res.status(401).json({ error: 'يوزر أو باسورد غلط' });
+  const token = jwt.sign({ u: username.toLowerCase() }, JWT_SECRET(), { algorithm: 'HS256', expiresIn: '7d' });
+  res.cookie('token', token, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 864e5, path: '/' });
+  res.json({ ok: true, username: u.username });
+}));
+
+app.post('/api/logout', (req, res) => { res.clearCookie('token', { path: '/' }); res.json({ ok: true }); });
+app.get('/api/me', auth, (req, res) => res.json({ username: req.user }));
+
+/* ---------- videos (Cloudinary, direct browser upload with server-signed params) ---------- */
+let injectedCloud = null;
+const _setCloud = (c) => { injectedCloud = c; };
+// Adapter around Cloudinary so handlers are testable with a realistic fake.
+function cloud() {
+  if (injectedCloud) return injectedCloud;
+  const cfg = CLD();
+  if (!cfg.cloud_name || !cfg.api_key || !cfg.api_secret) return null;
+  const c = require('cloudinary').v2;
+  c.config({ ...cfg, secure: true });
+  return {
+    cloud_name: cfg.cloud_name, api_key: cfg.api_key,
+    sign: (params) => c.utils.api_sign_request(params, cfg.api_secret),
+    resource: async (public_id) => { try { return await c.api.resource(public_id, { resource_type: 'video' }); } catch (e) { return null; } },
+    destroy: async (public_id) => c.uploader.destroy(public_id, { resource_type: 'video', invalidate: true }),
+  };
+}
+const MAX_VIDEOS = 50;
+
+// The folder is bound to the signed-in user inside the signature, so the browser cannot upload outside it.
+app.post('/api/upload-signature', auth, wrap(async (req, res) => {
+  const cl = cloud();
+  if (!cl) return res.status(500).json({ error: 'بيانات Cloudinary مش متضبطة' });
+  if ((await getDb().listBy('videos', 'owner', req.user)).length >= MAX_VIDEOS) return res.status(400).json({ error: 'وصلت للحد الأقصى للفيديوهات' });
+  const timestamp = Math.round(Date.now() / 1000);
+  const folder = 'gesture-remote/' + req.user;
+  res.json({ timestamp, folder, signature: cl.sign({ timestamp, folder }), api_key: cl.api_key, cloud_name: cl.cloud_name });
+}));
+
+// Registering a video: the client only names the public_id. We check it is inside the user's own folder AND
+// that it really exists in Cloudinary, and we take the URL from Cloudinary, never from the client.
+app.post('/api/videos', auth, wrap(async (req, res) => {
+  const { public_id, title } = req.body || {};
+  const prefix = 'gesture-remote/' + req.user + '/';
+  if (typeof public_id !== 'string' || !public_id.startsWith(prefix) || public_id.includes('..') || public_id.length > 200)
+    return res.status(400).json({ error: 'public_id غلط' });
+  const cl = cloud();
+  if (!cl) return res.status(500).json({ error: 'بيانات Cloudinary مش متضبطة' });
+  const r = await cl.resource(public_id);
+  if (!r || r.public_id !== public_id || typeof r.secure_url !== 'string' || !r.secure_url.startsWith('https://res.cloudinary.com/'))
+    return res.status(400).json({ error: 'الفيديو مش موجود على Cloudinary' });
+  const mine = await getDb().listBy('videos', 'owner', req.user);
+  if (mine.some((v) => v.public_id === public_id)) return res.status(409).json({ error: 'متسجل قبل كده' });
+  if (mine.length >= MAX_VIDEOS) return res.status(400).json({ error: 'وصلت للحد الأقصى للفيديوهات' });
+  const id = rnd(8);
+  await getDb().set('videos', id, { owner: req.user, public_id, url: r.secure_url, title: String(title || 'video').slice(0, 120), created: Date.now() });
+  res.json({ ok: true, id });
+}));
+
+app.get('/api/videos', auth, wrap(async (req, res) => {
+  const list = (await getDb().listBy('videos', 'owner', req.user)).sort((a, b) => b.created - a.created);
+  res.json({ videos: list.map(({ id, title, url, created }) => ({ id, title, url, created })) });
+}));
+
+app.delete('/api/videos/:id', auth, wrap(async (req, res) => {
+  const v = await getDb().get('videos', req.params.id);
+  if (!v || v.owner !== req.user) return res.status(404).json({ error: 'مش موجود' });
+  const cl = cloud();
+  if (!cl) return res.status(500).json({ error: 'بيانات Cloudinary مش متضبطة' });
+  try { // public_id comes from our own record, never from the request
+    const r = await cl.destroy(v.public_id);
+    if (r && r.result && r.result !== 'ok' && r.result !== 'not found') throw new Error(r.result);
+  } catch (e) { return res.status(502).json({ error: 'فشل المسح من Cloudinary' }); }
+  await getDb().del('videos', req.params.id);
+  res.json({ ok: true });
+}));
+
+/* ---------- pairing: remote shows a 6 digit code, camera types it ---------- */
+const STALE_MS = 15000;      // camera/remote considered gone after this much silence
+const UNPAIRED_TTL = 10 * 60000; // an unused code expires after 10 minutes
+// Brute-force guard for the 6-digit code, stored in the database so it holds across serverless instances.
+const PAIR_FAILS = 8, PAIR_WINDOW = 10 * 60000, PAIR_GLOBAL = 400;
+async function failState(req) {
+  const win = Math.floor(Date.now() / PAIR_WINDOW);
+  const ipKey = 'ip-' + sha(String(req.ip)).slice(0, 24) + '-' + win, gKey = 'global-' + win;
+  const [ip, g] = await Promise.all([getDb().get('limits', ipKey), getDb().get('limits', gKey)]);
+  return { ipKey, gKey, ip: (ip && ip.n) || 0, g: (g && g.n) || 0 };
+}
+async function noteFail(f) {
+  await getDb().set('limits', f.ipKey, { n: f.ip + 1 }); await getDb().set('limits', f.gKey, { n: f.g + 1 });
+}
+const newCode = async () => {
+  for (let i = 0; i < 20; i++) {
+    const code = String(crypto.randomInt(0, 1000000)).padStart(6, '0');
+    const s = await getDb().get('sessions', code);
+    if (!s || Date.now() - s.seen > STALE_MS * 2) return code;
+  }
+  throw new Error('no code');
+};
+
+// Remote creates a fresh session (new code every time: refresh, reconnect, etc.)
+app.post('/api/session', auth, wrap(async (req, res) => {
+  const old = req.body && req.body.oldCode;
+  if (typeof old === 'string' && /^\d{6}$/.test(old)) {
+    const o = await getDb().get('sessions', old);
+    if (o && o.owner === req.user) await getDb().del('sessions', old);
+  }
+  const code = await newCode();
+  const secret = rnd(16);
+  await getDb().set('sessions', code, { owner: req.user, secretHash: sha(secret), camHash: '', seen: Date.now(), created: Date.now(), camSeen: 0, seq: 0, cmds: [] });
+  res.json({ code, secret });
+}));
+
+// Remote polls for commands. Returns paired status + new commands since `since`.
+app.post('/api/session/poll', wrap(async (req, res) => {
+  const { code, secret, since } = req.body || {};
+  const s = typeof code === 'string' && await getDb().get('sessions', code);
+  if (!s || sha(String(secret)) !== s.secretHash) return res.status(410).json({ error: 'expired' });
+  const now = Date.now();
+  if (!s.camHash && now - s.created > UNPAIRED_TTL) { await getDb().del('sessions', code); return res.status(410).json({ error: 'expired' }); }
+  const paired = !!s.camHash && now - s.camSeen < STALE_MS;
+  if (s.camHash && !paired) { await getDb().del('sessions', code); return res.status(410).json({ error: 'camera-lost' }); } // code dies; remote makes a new one
+  if (now - s.seen > 5000) { s.seen = now; await getDb().set('sessions', code, s); } // limit Firestore writes (free quota)
+  res.json({ paired, cmds: s.cmds.filter((c) => c.seq > (Number(since) || 0)), seq: s.seq });
+}));
+
+app.post('/api/pair', wrap(async (req, res) => {
+  const f = await failState(req);
+  if (f.ip >= PAIR_FAILS || f.g >= PAIR_GLOBAL) return res.status(429).json({ error: 'محاولات كتير، جرب بعد شوية' });
+  const { code } = req.body || {};
+  const s = typeof code === 'string' && /^\d{6}$/.test(code) && await getDb().get('sessions', code);
+  const live = s && Date.now() - s.seen <= STALE_MS * 2 && (s.camHash || Date.now() - s.created <= UNPAIRED_TTL);
+  if (!live) { await noteFail(f); return res.status(404).json({ error: 'الكود غلط أو منتهي' }); }
+  // single camera: a second device cannot take over while the first one is alive
+  if (s.camHash) { await noteFail(f); return res.status(409).json({ error: 'الكود ده اتربط بكاميرا تانية' }); }
+  const camToken = rnd(16);
+  s.camHash = sha(camToken); s.camSeen = Date.now();
+  await getDb().set('sessions', code, s);
+  res.json({ ok: true, camToken });
+}));
+
+const TYPES = ['play', 'pause', 'back', 'forward', 'ping'];
+app.post('/api/command', wrap(async (req, res) => {
+  const { code, camToken, type } = req.body || {};
+  if (!TYPES.includes(type)) return res.status(400).json({ error: 'bad type' });
+  const s = typeof code === 'string' && await getDb().get('sessions', code);
+  if (!s || !s.camHash || sha(String(camToken)) !== s.camHash) return res.status(410).json({ error: 'expired' });
+  if (Date.now() - s.seen > STALE_MS) return res.status(410).json({ error: 'expired' }); // remote is gone
+  s.camSeen = Date.now();
+  if (type !== 'ping') { s.seq += 1; s.cmds = [...s.cmds, { seq: s.seq, type }].slice(-10); }
+  await getDb().set('sessions', code, s);
+  res.json({ ok: true });
+}));
+
+/* ---------- pages ---------- */
+const pub = path.join(__dirname, 'public');
+const guard = (req, res, next) => {
+  try { jwt.verify(req.cookies.token, JWT_SECRET(), { algorithms: ['HS256'] }); next(); } catch (e) { res.redirect('/login'); }
+};
+app.get(['/dashboard', '/dashboard.html', '/remote', '/remote.html'], guard);
+app.get('/', (req, res) => res.redirect('/login'));
+app.use(express.static(pub, { extensions: ['html'] }));
+
+module.exports = app;
+module.exports._setDb = _setDb;
+module.exports._setCloud = _setCloud;
+if (require.main === module) {
+  const port = process.env.PORT || 3000;
+  app.listen(port, () => console.log('http://localhost:' + port));
+}
