@@ -1,6 +1,7 @@
 const $ = (id) => document.getElementById(id);
 const err = $('err');
 const list = $('list');
+const RING_LEN = 326.73;
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -10,6 +11,30 @@ async function api(url, opt) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || 'خطأ');
   return d;
+}
+
+function setRing(pct) {
+  const p = Math.max(0, Math.min(100, pct));
+  $('pct').textContent = Math.round(p) + '%';
+  $('ringFg').style.strokeDashoffset = String(RING_LEN - (RING_LEN * p) / 100);
+}
+
+function fmtDuration(sec) {
+  if (!isFinite(sec) || sec <= 0) return 'أقل من ثانية';
+  if (sec < 60) return Math.ceil(sec) + ' ث';
+  const m = Math.floor(sec / 60);
+  const s = Math.round(sec % 60);
+  if (m < 60) return m + ' د ' + (s ? s + ' ث' : '');
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return h + ' س ' + (mm ? mm + ' د' : '');
+}
+
+function fmtSpeed(bps) {
+  if (!isFinite(bps) || bps <= 0) return '';
+  if (bps >= 1048576) return (bps / 1048576).toFixed(2) + ' ميجا/ث';
+  if (bps >= 1024) return (bps / 1024).toFixed(0) + ' كيلو/ث';
+  return bps.toFixed(0) + ' بايت/ث';
 }
 
 async function load() {
@@ -29,44 +54,99 @@ async function load() {
   });
 }
 
-$('up').onclick = async () => {
-  err.textContent = '';
-  const file = $('file').files[0];
-  if (!file) { err.textContent = 'اختر فيديو أولاً'; return; }
-  try {
-    const s = await api('/api/upload-signature', { method: 'POST' });
+function uploadCloudinary(s, file, onProgress) {
+  return new Promise((ok, no) => {
     const fd = new FormData();
     fd.append('file', file);
     fd.append('api_key', s.api_key);
     fd.append('timestamp', s.timestamp);
     fd.append('folder', s.folder);
     fd.append('signature', s.signature);
-    $('prog').hidden = false;
-    $('prog').value = 0;
-    const res = await new Promise((ok, no) => {
-      const x = new XMLHttpRequest();
-      x.open('POST', `https://api.cloudinary.com/v1_1/${s.cloud_name}/video/upload`);
-      x.upload.onprogress = (e) => { if (e.lengthComputable) $('prog').value = (e.loaded / e.total) * 100; };
-      x.onload = () => {
-        let j = {};
-        try { j = JSON.parse(x.responseText); } catch (e) {}
-        if (x.status < 300) ok(j);
-        else no(new Error((j.error && j.error.message) || 'فشل الرفع'));
-      };
-      x.onerror = () => no(new Error('فشل الاتصال'));
-      x.send(fd);
+
+    const x = new XMLHttpRequest();
+    x.open('POST', `https://api.cloudinary.com/v1_1/${s.cloud_name}/video/upload`);
+
+    const total = file.size;
+    let lastLoaded = 0;
+    let lastTime = performance.now();
+    let speed = 0;
+    let startedAt = 0;
+
+    x.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const now = performance.now();
+      if (!startedAt) startedAt = now;
+      const dt = (now - lastTime) / 1000;
+      if (dt >= 0.35) {
+        const dBytes = e.loaded - lastLoaded;
+        if (dBytes > 0) {
+          const inst = dBytes / dt;
+          speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+        }
+        lastLoaded = e.loaded;
+        lastTime = now;
+      }
+      const ratio = total ? e.loaded / total : 0;
+      onProgress(ratio, e.loaded, total, speed);
+    };
+
+    x.onload = () => {
+      let j = {};
+      try { j = JSON.parse(x.responseText); } catch (e) {}
+      if (x.status < 300) ok(j);
+      else no(new Error((j.error && j.error.message) || 'فشل الرفع'));
+    };
+    x.onerror = () => no(new Error('فشل الاتصال'));
+    x.send(fd);
+  });
+}
+
+$('up').onclick = async () => {
+  err.textContent = '';
+  const file = $('file').files[0];
+  if (!file) { err.textContent = 'اختر فيديو أولاً'; return; }
+
+  $('up').disabled = true;
+  $('progWrap').hidden = false;
+  setRing(0);
+  $('eta').textContent = 'جارٍ الحساب…';
+  $('speed').textContent = '';
+
+  try {
+    const s = await api('/api/upload-signature', { method: 'POST' });
+    const res = await uploadCloudinary(s, file, (ratio, loaded, total, speed) => {
+      const pct = ratio * 100;
+      setRing(pct);
+      const remainingBytes = total - loaded;
+      if (speed > 0 && ratio < 1) {
+        const eta = remainingBytes / speed;
+        $('eta').textContent = 'المدة التقريبية: ' + fmtDuration(eta);
+      } else if (ratio >= 1) {
+        $('eta').textContent = 'جارٍ الحفظ…';
+      } else {
+        $('eta').textContent = 'المدة التقريبية: جارٍ الحساب…';
+      }
+      $('speed').textContent = speed > 0 ? 'سرعة الرفع: ' + fmtSpeed(speed) : '';
     });
+
     await api('/api/videos', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ public_id: res.public_id, url: res.secure_url, title: file.name }),
     });
+
     $('file').value = '';
+    setRing(100);
+    $('eta').textContent = 'تم الرفع';
+    setTimeout(() => { $('progWrap').hidden = true; setRing(0); }, 800);
     load();
   } catch (e) {
     err.textContent = e.message;
+    $('progWrap').hidden = true;
+    setRing(0);
+  } finally {
+    $('up').disabled = false;
   }
-  $('prog').hidden = true;
 };
 
 $('out').onclick = async () => {
