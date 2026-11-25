@@ -1,6 +1,31 @@
-<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>الريموت</title><link rel="stylesheet" href="/css/remote.css"></head>
-<body><div class="top"><h1>الفيديو</h1>
-<div id="codeBox"><div class="muted">كود الكاميرا</div><div id="code">------</div><div id="status" class="off">مستني الكاميرا</div></div>
-<a href="/dashboard">لوحة التحكم</a></div>
-<div class="layout"><div><video id="v" controls playsinline></video><div class="muted" id="hint">اختار فيديو من القائمة. اضغط على الفيديو مرة واحدة لو المتصفح منع التشغيل.</div></div>
-<div class="list" id="list"></div></div><div id="toast"></div><script src="/js/remote.js"></script></body></html>
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>الريموت</title>
+  <link rel="stylesheet" href="/css/remote.css">
+</head>
+<body>
+  <header class="top">
+    <h1>الفيديو</h1>
+    <div id="codeBox">
+      <div class="muted">كود الكاميرا</div>
+      <div id="code">------</div>
+      <div id="status" class="off">بانتظار الكاميرا</div>
+    </div>
+    <a class="btn" href="/dashboard">لوحة التحكم</a>
+  </header>
+
+  <main class="layout">
+    <section>
+      <video id="v" controls playsinline></video>
+      <p class="muted" id="hint">اختر فيديو من القائمة. اضغط على الفيديو مرة واحدة لو المتصفح منع التشغيل.</p>
+    </section>
+    <aside class="list" id="list"></aside>
+  </main>
+
+  <div id="toast" aria-live="polite"></div>
+  <script src="/js/remote.js"></script>
+</body>
+</html>
