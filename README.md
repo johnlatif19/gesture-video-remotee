@@ -1,45 +1,27 @@
-# Gesture Remote (ريموت بإشارات الإيد)
+# Gesture Remote
 
-## الملفات
-public/{camera,remote,login,dashboard,sign-in}.html + css/ + js/ ، server.js ، package.json ، vercel.json ، .env
+## Structure
+public/{camera,remote,login,dashboard,sign-in}.html + css/ + js/, server.js, package.json, vercel.json, .env
 
-## الصفحات
-- /sign-in إنشاء حساب  -> /login تسجيل دخول -> /dashboard (رفع ومسح فيديوهات)
-- /remote يفتح الفيديو ويعرض كود 6 أرقام. الكود بيتغير مع كل ريفرش أو لو النت فصل أو الكاميرا انقطعت.
-- /camera تكتب فيه الكود وتفتح الكاميرا.
-- الإشارات: ✊ تشغيل، ☝️ رجوع 5 ثواني، حرك إيدك يمين = تقديم 5 ثواني، 🖐 إيقاف.
+## Pages
+- /sign-in create account → /login → /dashboard (upload and manage videos)
+- /remote plays video and shows a 6-digit code.
+- /camera pairs with code and opens camera.
+- Gestures: fist = play, index up = rewind 5s, swipe right = forward 5s, open palm = pause.
 
-## الإعداد (كله مجاني، من غير كارت)
-1. Firebase: اعمل مشروع (خطة Spark) > Firestore Database (Native, production mode) > Project settings > Service accounts > Generate new private key. حط محتوى JSON كله في سطر واحد في FIREBASE_CONFIG.
-2. Cloudinary: حساب مجاني > Dashboard: Cloud name -> CLOUDINRAY_NAME ، API Key ، API Secret.
-3. JWT_SECRET: أي نص عشوائي طويل (مثلا: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))").
-4. Vercel (Hobby): من فولدر المشروع شغل `npx vercel` (أو `npx vercel --prod`) واتبع الأسئلة، وضيف المتغيرات الخمسة في Settings > Environment Variables. ما ترفعش ملف .env نفسه.
-5. محليا: npm install ثم npm start ثم http://localhost:3000. لو FIREBASE_CONFIG فاضي بيشتغل بذاكرة مؤقتة (للتجربة فقط).
-6. الاختبار الآلي: npm test
+## Setup
+1. Firebase project (Spark) → Firestore (Native, production) → Project settings → Service accounts → Generate new private key. Put the JSON as a single line in FIREBASE_CONFIG.
+2. Cloudinary free account → Cloud name, API Key, API Secret into CLOUDINRAY_* variables.
+3. JWT_SECRET: long random string.
+4. Deploy with `npx vercel --prod`, set the five env vars in Vercel.
+5. Local: npm install, npm start, open http://localhost:3000.
+6. Tests: npm test.
 
-أسماء المتغيرات زي ما طلبت (CLOUDINRAY_*). السيرفر بيقبل كمان CLOUDINARY_* بالإملاء الصحيح.
-
-## الأمان (اتعمل واتختبر بالاختبارات الآلية)
-- كود الربط 6 أرقام: بعد 8 محاولات غلط من نفس الجهاز في 10 دقايق بيتقفل (والعداد في Firestore فبيشتغل على كل نسخ السيرفر)، وفيه حد عام. الكود غير المستخدم بيموت بعد 10 دقايق، وبيموت لو الريموت اتقفل (30 ثانية).
-- كاميرا واحدة بس لكل كود: أي جهاز تاني بيتم رفضه (409). لو الكاميرا سكتت 15 ثانية الكود بيموت والريموت بيعمل كود جديد.
-- رفع الفيديو: التوقيع مربوط بفولدر اليوزر. تسجيل الفيديو بيتأكد إن الملف فعلا موجود على Cloudinary داخل فولدر اليوزر، والرابط بيتاخد من Cloudinary مش من المتصفح. المسح بيستخدم public_id المحفوظ عندنا وبيرفض لو الفيديو مش بتاع اليوزر.
-- الباسورد bcrypt، الـ JWT بخوارزمية HS256 فقط في كوكي httpOnly (و secure على Vercel)، ورفض أي Origin غريب على الطلبات الكتابية.
-- Firestore: السيرفر هو الوحيد اللي بيكلمه. انسخ firestore.rules (منع كامل للمتصفح) في Firebase Console > Firestore > Rules.
-- الأسرار ما بتتبعتش للمتصفح (الـ api_key بس، وهو عام).
-
-## سلوك الريموت
-- كل ريفرش للريموت = كود جديد. لو النت فصل أكتر من حوالي 5 ثواني الكود بيتمسح من الشاشة ويتعمل كود جديد أول ما النت يرجع. لو الكاميرا هي اللي فصلت بيتعمل كود جديد وتكتبه تاني.
-- الإشارة المحتفظ بيها (زي ☝️) بتنفذ مرة واحدة. عشان تكرر: نزل إيدك أو غير الإشارة نص ثانية وارفعها تاني. فيه كمان 4 فريمات ثبات وانتظار 1.2 ثانية بين أي أمرين.
-- تشغيل المتصفح التلقائي: لما تضغط على اسم الفيديو في القائمة ده بيفتح الإذن للتحكم بالإيد بعدها. لو المتصفح رفض هيظهر تنبيه، اضغط تشغيل مرة.
-
-## حدود (مش متجربة بحسابات حقيقية)
-- مفيش WebSocket على Vercel، فالربط polling كل ~1 ثانية عبر Firestore (تأخير تقريبي ثانية).
-- Firestore (خطة Spark) ليها كوتا يومية للقراءات والكتابات. قللت الكتابات، لكن استخدام طويل جدا ممكن يوصل للحد. راجع firebase.google.com/pricing.
-- Cloudinary Free: 25 credit شهريا وأقصى حجم فيديو 100MB (cloudinary.com/pricing/compare-plans، بتاريخ 25 نوفمبر 2026). الفيديو بيترفع من المتصفح مباشرة لأن Vercel بيحد حجم الطلب. التطبيق بيسمح بـ 50 فيديو لكل يوزر.
-- Vercel Hobby مجانية للاستخدام الشخصي غير التجاري.
-- Vercel: المشروع بتنسيق Express المدعوم رسميا (server.js بيصدّر التطبيق، وملفات public/** بتتقدم من CDN بتاعة Vercel، و vercel.json فيه cleanUrls وهيدرز بس). اتأكدت من الشكل ده بـ `vercel build` المحلي (بيطلع function للـ API + الملفات الثابتة) والـ vercel.json متطابق مع schema بتاع Vercel. النشر الفعلي على حسابك لسه ما اتجربش.
-- على Vercel صفحات الـ HTML بتتقدم كملفات ثابتة، فحماية /dashboard و /remote بتتم من الـ API (من غير تسجيل دخول الصفحة بتحول لـ /login وما بتعرض أي بيانات).
-- الكاميرا محتاجة HTTPS ونت (موديل MediaPipe من CDN).
-
-## الاختبارات
-`npm test` بيشغل التطبيق الحقيقي على HTTP مع بدائل (fake) لـ Firestore و Cloudinary، واختبار منفصل لمنطق الإشارات.
+## Security
+- User keys are stored as SHA-256 hashes of lowercased usernames.
+- Passwords hashed with bcrypt, minimum 5 characters.
+- JWT HS256 in an httpOnly cookie.
+- Origin check on non-GET requests.
+- CSP and security headers.
+- Firestore rules: deny all browser access.
+- Pairing code protected against brute force with DB-backed counters.
