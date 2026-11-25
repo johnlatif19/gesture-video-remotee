@@ -107,7 +107,7 @@ app.post('/api/signup', limit(10, 60000), wrap(async (req, res) => {
   const { username, password } = req.body || {};
   if (!JWT_SECRET()) return res.status(500).json({ error: 'JWT_SECRET مش متضبط' });
   if (!validUser(username)) return res.status(400).json({ error: 'اليوزر 3-30 حرف إنجليزي/أرقام (_ . - مسموح)' });
-  if (typeof password !== 'string' || password.length < 8 || password.length > 72) return res.status(400).json({ error: 'الباسورد من 8 لـ 72 حرف' });
+  if (typeof password !== 'string' || password.length < 5 || password.length > 72) return res.status(400).json({ error: 'الباسورد من 5 لـ 72 حرف' });
   const id = username.toLowerCase();
   if (await getDb().get('users', id)) return res.status(409).json({ error: 'اليوزر ده موجود' });
   await getDb().set('users', id, { username, hash: await bcrypt.hash(password, 10), created: Date.now() });
