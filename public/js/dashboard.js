@@ -54,51 +54,71 @@ async function load() {
   });
 }
 
-function uploadCloudinary(s, file, onProgress) {
-  return new Promise((ok, no) => {
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('api_key', s.api_key);
-    fd.append('timestamp', s.timestamp);
-    fd.append('folder', s.folder);
-    fd.append('signature', s.signature);
+const PART_CONCURRENCY = 4;
 
-    const x = new XMLHttpRequest();
-    x.open('POST', `https://api.cloudinary.com/v1_1/${s.cloud_name}/video/upload`);
-
-    const total = file.size;
-    let lastLoaded = 0;
-    let lastTime = performance.now();
-    let speed = 0;
-    let startedAt = 0;
-
-    x.upload.onprogress = (e) => {
-      if (!e.lengthComputable) return;
-      const now = performance.now();
-      if (!startedAt) startedAt = now;
-      const dt = (now - lastTime) / 1000;
-      if (dt >= 0.35) {
-        const dBytes = e.loaded - lastLoaded;
-        if (dBytes > 0) {
-          const inst = dBytes / dt;
-          speed = speed ? speed * 0.7 + inst * 0.3 : inst;
-        }
-        lastLoaded = e.loaded;
-        lastTime = now;
-      }
-      const ratio = total ? e.loaded / total : 0;
-      onProgress(ratio, e.loaded, total, speed);
-    };
-
-    x.onload = () => {
-      let j = {};
-      try { j = JSON.parse(x.responseText); } catch (e) {}
-      if (x.status < 300) ok(j);
-      else no(new Error((j.error && j.error.message) || 'فشل الرفع'));
-    };
-    x.onerror = () => no(new Error('فشل الاتصال'));
-    x.send(fd);
+async function uploadMultipart(file, onProgress) {
+  const init = await api('/api/upload/init', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ size: file.size, title: file.name }),
   });
+  const { uploadId, key, partSize } = init;
+  const totalParts = Math.ceil(file.size / partSize);
+  const parts = [];
+  let uploadedBytes = 0;
+  let lastTime = performance.now();
+  let lastLoaded = 0;
+  let speed = 0;
+
+  const queue = [];
+  for (let i = 1; i <= totalParts; i++) queue.push(i);
+
+  async function uploadOne(partNumber) {
+    const start = (partNumber - 1) * partSize;
+    const end = Math.min(start + partSize, file.size);
+    const blob = file.slice(start, end);
+
+    const { url } = await api('/api/upload/part-url', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ uploadId, key, partNumber }),
+    });
+
+    const res = await fetch(url, { method: 'PUT', body: blob });
+    if (!res.ok) throw new Error('فشل رفع الجزء ' + partNumber);
+
+    const etag = res.headers.get('ETag');
+    parts.push({ ETag: etag, PartNumber: partNumber });
+
+    uploadedBytes += blob.size;
+    const now = performance.now();
+    const dt = (now - lastTime) / 1000;
+    if (dt >= 0.5) {
+      const inst = (uploadedBytes - lastLoaded) / dt;
+      speed = speed ? speed * 0.7 + inst * 0.3 : inst;
+      lastLoaded = uploadedBytes;
+      lastTime = now;
+    }
+    onProgress(uploadedBytes / file.size, uploadedBytes, file.size, speed);
+  }
+
+  async function worker() {
+    while (queue.length) {
+      const n = queue.shift();
+      await uploadOne(n);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(PART_CONCURRENCY, totalParts) }, worker));
+  parts.sort((a, b) => a.PartNumber - b.PartNumber);
+
+  await api('/api/upload/complete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ uploadId, key, parts }),
+  });
+
+  return { key };
 }
 
 $('up').onclick = async () => {
@@ -113,26 +133,18 @@ $('up').onclick = async () => {
   $('speed').textContent = '';
 
   try {
-    const s = await api('/api/upload-signature', { method: 'POST' });
-    const res = await uploadCloudinary(s, file, (ratio, loaded, total, speed) => {
+    await uploadMultipart(file, (ratio, loaded, total, speed) => {
       const pct = ratio * 100;
       setRing(pct);
       const remainingBytes = total - loaded;
       if (speed > 0 && ratio < 1) {
-        const eta = remainingBytes / speed;
-        $('eta').textContent = 'المدة التقريبية: ' + fmtDuration(eta);
+        $('eta').textContent = 'المدة التقريبية: ' + fmtDuration(remainingBytes / speed);
       } else if (ratio >= 1) {
-        $('eta').textContent = 'جارٍ الحفظ…';
+        $('eta').textContent = 'جارٍ الدمج…';
       } else {
         $('eta').textContent = 'المدة التقريبية: جارٍ الحساب…';
       }
       $('speed').textContent = speed > 0 ? 'سرعة الرفع: ' + fmtSpeed(speed) : '';
-    });
-
-    await api('/api/videos', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ public_id: res.public_id, url: res.secure_url, title: file.name }),
     });
 
     $('file').value = '';
