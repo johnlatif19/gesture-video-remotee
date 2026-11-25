@@ -68,7 +68,7 @@ app.use((req, res, next) => {
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'same-origin',
     'Permissions-Policy': 'camera=(self), microphone=()',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://res.cloudinary.com; media-src 'self' https://res.cloudinary.com blob:; connect-src 'self' https://api.cloudinary.com https://storage.googleapis.com https://cdn.jsdelivr.net; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data: https://res.cloudinary.com; media-src 'self' https://res.cloudinary.com blob:; connect-src 'self' https://api.cloudinary.com https://storage.googleapis.com https://cdn.jsdelivr.net; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     'Cache-Control': req.path.startsWith('/api/') ? 'no-store' : 'no-cache',
   });
   next();
@@ -287,9 +287,15 @@ const pub = path.join(__dirname, 'public');
 const guard = (req, res, next) => {
   try { jwt.verify(req.cookies.token, JWT_SECRET(), { algorithms: ['HS256'] }); next(); } catch (e) { res.redirect('/login'); }
 };
-app.get(['/dashboard', '/dashboard.html', '/remote', '/remote.html'], guard);
+
+app.get(['/dashboard', '/dashboard.html'], guard, (req, res) => res.sendFile(path.join(pub, 'dashboard.html')));
+app.get(['/remote', '/remote.html'], guard, (req, res) => res.sendFile(path.join(pub, 'remote.html')));
+app.get(['/login', '/login.html'], (req, res) => res.sendFile(path.join(pub, 'login.html')));
+app.get(['/sign-in', '/sign-in.html'], (req, res) => res.sendFile(path.join(pub, 'sign-in.html')));
+app.get(['/camera', '/camera.html'], (req, res) => res.sendFile(path.join(pub, 'camera.html')));
 app.get('/', (req, res) => res.redirect('/login'));
-app.use(express.static(pub, { extensions: ['html'] }));
+
+app.use(express.static(pub, { extensions: [] }));
 
 module.exports = app;
 module.exports._setDb = _setDb;
