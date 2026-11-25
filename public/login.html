@@ -1,6 +1,28 @@
-<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>تسجيل الدخول</title><link rel="stylesheet" href="/css/login.css"></head>
-<body><h1>تسجيل الدخول</h1><form class="card" id="f">
-<input id="u" placeholder="Username" autocomplete="username" required>
-<input id="p" type="password" placeholder="Password" autocomplete="current-password" required>
-<div class="err" id="err"></div><button>دخول</button>
-<a href="/sign-in">مفيش حساب؟ سجل</a></form><script src="/js/login.js"></script></body></html>
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>تسجيل الدخول</title>
+  <link rel="stylesheet" href="/css/login.css">
+</head>
+<body>
+  <main class="panel">
+    <h1>تسجيل الدخول</h1>
+    <form class="card" id="f">
+      <label class="field">
+        <span>اسم المستخدم</span>
+        <input id="u" name="username" autocomplete="username" minlength="3" maxlength="30" required>
+      </label>
+      <label class="field">
+        <span>كلمة المرور</span>
+        <input id="p" name="password" type="password" autocomplete="current-password" minlength="5" maxlength="72" required>
+      </label>
+      <div class="err" id="err"></div>
+      <button type="submit">دخول</button>
+      <a class="alt" href="/sign-in">مفيش حساب؟ سجل</a>
+    </form>
+  </main>
+  <script src="/js/login.js"></script>
+</body>
+</html>
