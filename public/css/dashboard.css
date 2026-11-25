@@ -30,6 +30,7 @@ h2 { margin: 0 0 6px; font-size: 1.1rem; color: #cdd3ff; }
   transition: background .15s;
 }
 .btn:hover, button:hover { background: #7280ff; }
+button:disabled { opacity: .55; cursor: not-allowed; }
 button.danger { background: #d9475a; border-color: #d9475a; }
 button.danger:hover { background: #e8606f; }
 button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid #9fb0ff; outline-offset: 2px; }
@@ -46,7 +47,6 @@ button:focus-visible, input:focus-visible, a:focus-visible { outline: 2px solid 
 input[type="file"] { background: #181c33; color: #fff; padding: 10px; border-radius: 10px; border: 1px solid #3a4070; }
 .err { color: #ff8a98; min-height: 1.2em; font-size: .95rem; }
 .muted { color: #9aa; font-size: .9rem; margin: 0; }
-progress { width: 100%; height: 8px; }
 .list { display: flex; flex-direction: column; gap: 10px; }
 .vid {
   display: flex;
@@ -59,7 +59,40 @@ progress { width: 100%; height: 8px; }
 }
 .vid video { width: 120px; height: 68px; object-fit: cover; border-radius: 10px; background: #000; flex: none; }
 .vid .t { flex: 1; min-width: 0; overflow-wrap: anywhere; line-height: 1.5; }
+.progress-wrap {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0 4px;
+}
+.ring { position: relative; width: 120px; height: 120px; flex: none; }
+.ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring-bg { fill: none; stroke: #262c4e; stroke-width: 10; }
+.ring-fg {
+  fill: none;
+  stroke: #5b6cff;
+  stroke-width: 10;
+  stroke-linecap: round;
+  stroke-dasharray: 326.73;
+  stroke-dashoffset: 326.73;
+  transition: stroke-dashoffset .2s linear;
+}
+.ring-label {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: #cdd3ff;
+  direction: ltr;
+}
+.progress-meta { display: flex; flex-direction: column; gap: 6px; font-size: .95rem; }
+.progress-meta #eta { color: #eef; font-weight: 600; }
+.progress-meta #speed { color: #9aa; font-size: .85rem; }
 @media (max-width: 560px) {
+  .progress-wrap { flex-direction: column; align-items: flex-start; }
   .vid { flex-wrap: wrap; }
   .vid video { width: 100%; height: auto; aspect-ratio: 16 / 9; max-height: 200px; }
   .vid .t { flex: 1 1 100%; order: 2; }
