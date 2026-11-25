@@ -4,6 +4,14 @@ const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
+const {
+  S3Client,
+  CreateMultipartUploadCommand,
+  UploadPartCommand,
+  CompleteMultipartUploadCommand,
+  DeleteObjectCommand,
+} = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 
 function loadEnv() {
   const fs = require('fs');
@@ -18,10 +26,14 @@ try { loadEnv(); } catch (e) {}
 
 const env = (k) => process.env[k] || '';
 const JWT_SECRET = () => env('JWT_SECRET') || (process.env.NODE_ENV === 'test' ? 'test-secret' : '');
-const CLD = () => ({
-  cloud_name: env('CLOUDINRAY_NAME') || env('CLOUDINARY_NAME') || env('CLOUDINARY_CLOUD_NAME'),
-  api_key: env('CLOUDINRAY_API_KEY') || env('CLOUDINARY_API_KEY'),
-  api_secret: env('CLOUDINRAY_API_SECRET') || env('CLOUDINARY_API_SECRET'),
+
+const r2 = new S3Client({
+  region: 'auto',
+  endpoint: `https://${env('R2_ACCOUNT_ID')}.r2.cloudflarestorage.com`,
+  credentials: {
+    accessKeyId: env('R2_ACCESS_KEY_ID'),
+    secretAccessKey: env('R2_SECRET_ACCESS_KEY'),
+  },
 });
 
 let db;
@@ -56,7 +68,6 @@ function getDb() {
   }
   return db;
 }
-const _setDb = (d) => { db = d; };
 
 const app = express();
 app.disable('x-powered-by');
@@ -68,7 +79,7 @@ app.use((req, res, next) => {
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'same-origin',
     'Permissions-Policy': 'camera=(self), microphone=()',
-    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data: https://res.cloudinary.com; media-src 'self' https://res.cloudinary.com blob:; connect-src 'self' https://api.cloudinary.com https://storage.googleapis.com https://cdn.jsdelivr.net; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+    'Content-Security-Policy': "default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self'; img-src 'self' data:; media-src 'self' https://*.r2.dev https://*.cloudflarestorage.com blob:; connect-src 'self' https://*.r2.dev https://*.cloudflarestorage.com https://storage.googleapis.com https://cdn.jsdelivr.net; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
     'Cache-Control': req.path.startsWith('/api/') ? 'no-store' : 'no-cache',
   });
   next();
@@ -99,8 +110,7 @@ const validUser = (u) => typeof u === 'string' && /^[a-zA-Z0-9_.-]{3,30}$/.test(
 
 function auth(req, res, next) {
   try {
-    const t = req.cookies.token;
-    req.user = jwt.verify(t, JWT_SECRET(), { algorithms: ['HS256'] }).u;
+    req.user = jwt.verify(req.cookies.token, JWT_SECRET(), { algorithms: ['HS256'] }).u;
     next();
   } catch (e) { res.status(401).json({ error: 'سجل دخول الأول' }); }
 }
@@ -147,47 +157,74 @@ app.get('/api/me', auth, wrap(async (req, res) => {
   res.json({ username: u.username });
 }));
 
-let injectedCloud = null;
-const _setCloud = (c) => { injectedCloud = c; };
-function cloud() {
-  if (injectedCloud) return injectedCloud;
-  const cfg = CLD();
-  if (!cfg.cloud_name || !cfg.api_key || !cfg.api_secret) return null;
-  const c = require('cloudinary').v2;
-  c.config({ ...cfg, secure: true });
-  return {
-    cloud_name: cfg.cloud_name, api_key: cfg.api_key,
-    sign: (params) => c.utils.api_sign_request(params, cfg.api_secret),
-    resource: async (public_id) => { try { return await c.api.resource(public_id, { resource_type: 'video' }); } catch (e) { return null; } },
-    destroy: async (public_id) => c.uploader.destroy(public_id, { resource_type: 'video', invalidate: true }),
-  };
-}
 const MAX_VIDEOS = 50;
+const PART_SIZE = 10 * 1024 * 1024;
 
-app.post('/api/upload-signature', auth, wrap(async (req, res) => {
-  const cl = cloud();
-  if (!cl) return res.status(500).json({ error: 'بيانات Cloudinary مش متضبطة' });
-  if ((await getDb().listBy('videos', 'owner', req.user)).length >= MAX_VIDEOS) return res.status(400).json({ error: 'وصلت للحد الأقصى للفيديوهات' });
-  const timestamp = Math.round(Date.now() / 1000);
-  const folder = 'gesture-remote/' + req.user;
-  res.json({ timestamp, folder, signature: cl.sign({ timestamp, folder }), api_key: cl.api_key, cloud_name: cl.cloud_name });
+app.post('/api/upload/init', auth, wrap(async (req, res) => {
+  const { size, title } = req.body || {};
+  if (typeof size !== 'number' || size <= 0) return res.status(400).json({ error: 'حجم غير صالح' });
+  const mine = await getDb().listBy('videos', 'owner', req.user);
+  if (mine.length >= MAX_VIDEOS) return res.status(400).json({ error: 'وصلت للحد الأقصى للفيديوهات' });
+
+  const key = `gesture-remote/${req.user}/${rnd(8)}.mp4`;
+  const cmd = new CreateMultipartUploadCommand({
+    Bucket: env('R2_BUCKET_NAME'),
+    Key: key,
+    ContentType: 'video/mp4',
+  });
+  const out = await r2.send(cmd);
+
+  await getDb().set('uploads', out.UploadId, {
+    owner: req.user,
+    key,
+    title: String(title || 'video').slice(0, 120),
+    size,
+    created: Date.now(),
+  });
+
+  res.json({ uploadId: out.UploadId, key, partSize: PART_SIZE });
 }));
 
-app.post('/api/videos', auth, wrap(async (req, res) => {
-  const { public_id, title } = req.body || {};
-  const prefix = 'gesture-remote/' + req.user + '/';
-  if (typeof public_id !== 'string' || !public_id.startsWith(prefix) || public_id.includes('..') || public_id.length > 200)
-    return res.status(400).json({ error: 'public_id غلط' });
-  const cl = cloud();
-  if (!cl) return res.status(500).json({ error: 'بيانات Cloudinary مش متضبطة' });
-  const r = await cl.resource(public_id);
-  if (!r || r.public_id !== public_id || typeof r.secure_url !== 'string' || !r.secure_url.startsWith('https://res.cloudinary.com/'))
-    return res.status(400).json({ error: 'الفيديو مش موجود على Cloudinary' });
-  const mine = await getDb().listBy('videos', 'owner', req.user);
-  if (mine.some((v) => v.public_id === public_id)) return res.status(409).json({ error: 'متسجل قبل كده' });
-  if (mine.length >= MAX_VIDEOS) return res.status(400).json({ error: 'وصلت للحد الأقصى للفيديوهات' });
+app.post('/api/upload/part-url', auth, wrap(async (req, res) => {
+  const { uploadId, partNumber, key } = req.body || {};
+  if (!uploadId || !key || typeof partNumber !== 'number') return res.status(400).json({ error: 'معاملات ناقصة' });
+  const task = await getDb().get('uploads', uploadId);
+  if (!task || task.owner !== req.user) return res.status(403).json({ error: 'غير مصرح' });
+
+  const cmd = new UploadPartCommand({
+    Bucket: env('R2_BUCKET_NAME'),
+    Key: key,
+    UploadId: uploadId,
+    PartNumber: partNumber,
+  });
+  const url = await getSignedUrl(r2, cmd, { expiresIn: 3600 });
+  res.json({ url });
+}));
+
+app.post('/api/upload/complete', auth, wrap(async (req, res) => {
+  const { uploadId, key, parts } = req.body || {};
+  if (!uploadId || !key || !Array.isArray(parts) || !parts.length) return res.status(400).json({ error: 'معاملات ناقصة' });
+  const task = await getDb().get('uploads', uploadId);
+  if (!task || task.owner !== req.user) return res.status(403).json({ error: 'غير مصرح' });
+
+  const cmd = new CompleteMultipartUploadCommand({
+    Bucket: env('R2_BUCKET_NAME'),
+    Key: key,
+    UploadId: uploadId,
+    MultipartUpload: { Parts: parts },
+  });
+  await r2.send(cmd);
+
   const id = rnd(8);
-  await getDb().set('videos', id, { owner: req.user, public_id, url: r.secure_url, title: String(title || 'video').slice(0, 120), created: Date.now() });
+  await getDb().set('videos', id, {
+    owner: req.user,
+    public_id: key,
+    url: `${env('R2_PUBLIC_URL')}/${key}`,
+    title: task.title,
+    created: Date.now(),
+  });
+  await getDb().del('uploads', uploadId);
+
   res.json({ ok: true, id });
 }));
 
@@ -199,12 +236,14 @@ app.get('/api/videos', auth, wrap(async (req, res) => {
 app.delete('/api/videos/:id', auth, wrap(async (req, res) => {
   const v = await getDb().get('videos', req.params.id);
   if (!v || v.owner !== req.user) return res.status(404).json({ error: 'مش موجود' });
-  const cl = cloud();
-  if (!cl) return res.status(500).json({ error: 'بيانات Cloudinary مش متضبطة' });
+
   try {
-    const r = await cl.destroy(v.public_id);
-    if (r && r.result && r.result !== 'ok' && r.result !== 'not found') throw new Error(r.result);
-  } catch (e) { return res.status(502).json({ error: 'فشل المسح من Cloudinary' }); }
+    await r2.send(new DeleteObjectCommand({
+      Bucket: env('R2_BUCKET_NAME'),
+      Key: v.public_id,
+    }));
+  } catch (e) {}
+
   await getDb().del('videos', req.params.id);
   res.json({ ok: true });
 }));
@@ -294,12 +333,9 @@ app.get(['/login', '/login.html'], (req, res) => res.sendFile(path.join(pub, 'lo
 app.get(['/sign-in', '/sign-in.html'], (req, res) => res.sendFile(path.join(pub, 'sign-in.html')));
 app.get(['/camera', '/camera.html'], (req, res) => res.sendFile(path.join(pub, 'camera.html')));
 app.get('/', (req, res) => res.redirect('/login'));
-
 app.use(express.static(pub, { extensions: [] }));
 
 module.exports = app;
-module.exports._setDb = _setDb;
-module.exports._setCloud = _setCloud;
 if (require.main === module) {
   const port = process.env.PORT || 3000;
   app.listen(port, () => console.log('http://localhost:' + port));
